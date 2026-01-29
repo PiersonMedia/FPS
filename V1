@@ -1,0 +1,766 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>CQB FPS (Lighting + Colliders + Furniture)</title>
+  <style>
+    html, body { margin:0; height:100%; overflow:hidden; background:#000; }
+    canvas { display:block; }
+    #ui {
+      position: fixed; left: 12px; top: 12px;
+      font: 12px/1.35 system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      color: #fff;
+      background: rgba(0,0,0,0.55);
+      padding: 10px 12px;
+      border-radius: 10px;
+      user-select: none;
+    }
+    #center {
+      position: fixed; left: 50%; top: 50%;
+      transform: translate(-50%,-50%);
+      width: 10px; height: 10px;
+      pointer-events: none;
+    }
+    #center:before, #center:after {
+      content:""; position:absolute; left:50%; top:50%;
+      background: rgba(255,255,255,0.9);
+      transform: translate(-50%,-50%);
+      border-radius: 1px;
+    }
+    #center:before { width: 10px; height: 2px; }
+    #center:after  { width: 2px; height: 10px; }
+    #msg {
+      position: fixed; left: 50%; top: 14px;
+      transform: translateX(-50%);
+      color: #fff;
+      font: 12px system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      background: rgba(0,0,0,0.55);
+      padding: 8px 10px;
+      border-radius: 10px;
+      display:none;
+    }
+  </style>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+
+<body>
+  <div id="ui">
+    <div><b>CQB FPS</b></div>
+    <div>Click to lock mouse</div>
+    <div>WASD move | Mouse look | LMB shoot | R reload | L laser | Shift sprint | Space jump</div>
+    <div id="hud"></div>
+  </div>
+  <div id="center"></div>
+  <div id="msg"></div>
+
+<script type="module">
+import * as THREE from "three";
+import { PointerLockControls } from "three/addons/controls/PointerLockControls.js";
+
+////////////////////////////////////////////////////////////
+// Setup
+////////////////////////////////////////////////////////////
+const hudEl = document.getElementById("hud");
+const msgEl = document.getElementById("msg");
+
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15; // brighter
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap; // softer shadows
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0c12);
+scene.fog = new THREE.Fog(0x0a0c12, 7, 52);
+
+const camera = new THREE.PerspectiveCamera(75, innerWidth/innerHeight, 0.1, 220);
+camera.position.set(0, 1.7, 6);
+
+const controls = new PointerLockControls(camera, document.body);
+document.body.addEventListener("click", () => controls.lock());
+
+function flashMsg(text, ms=1200) {
+  msgEl.textContent = text;
+  msgEl.style.display = "block";
+  clearTimeout(flashMsg._t);
+  flashMsg._t = setTimeout(()=> msgEl.style.display="none", ms);
+}
+
+////////////////////////////////////////////////////////////
+// Lighting (more “practical” CQB)
+////////////////////////////////////////////////////////////
+const hemi = new THREE.HemisphereLight(0x93a9ff, 0x1a0f08, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xffffff, 1.0);
+key.position.set(10, 18, 8);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.left = -30;
+key.shadow.camera.right = 30;
+key.shadow.camera.top = 30;
+key.shadow.camera.bottom = -30;
+scene.add(key);
+
+// subtle ambient fill so corners aren’t dead black
+scene.add(new THREE.AmbientLight(0x2a3244, 0.35));
+
+// Ceiling panel lights + emissive fixtures
+function addPanelLight(x,z, color=0xfff0d6, intensity=3.0) {
+  const light = new THREE.PointLight(color, intensity, 14, 2);
+  light.position.set(x, 3.05, z);
+  scene.add(light);
+
+  const panel = new THREE.Mesh(
+    new THREE.BoxGeometry(1.2, 0.08, 0.6),
+    new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      emissive: color,
+      emissiveIntensity: 2.3,
+      roughness: 0.2,
+      metalness: 0.0
+    })
+  );
+  panel.position.copy(light.position);
+  panel.position.y += 0.05;
+  scene.add(panel);
+}
+addPanelLight(0, 0);
+addPanelLight(0, -8);
+addPanelLight(6, -8);
+addPanelLight(-6, -8);
+addPanelLight(0, -16);
+addPanelLight(-6, -14);
+addPanelLight(6, -14);
+
+// Emissive strip accents (adds vibe without postprocessing)
+function addStrip(x,y,z, w,d, color=0x6aa6ff, emiss=1.2) {
+  const strip = new THREE.Mesh(
+    new THREE.BoxGeometry(w, 0.03, d),
+    new THREE.MeshStandardMaterial({
+      color: 0x101318,
+      emissive: color,
+      emissiveIntensity: emiss,
+      roughness: 0.4,
+      metalness: 0.2
+    })
+  );
+  strip.position.set(x,y,z);
+  scene.add(strip);
+}
+addStrip(0, 1.05, 5.8, 14, 0.05, 0x355dff, 0.9);
+addStrip(0, 1.05, -17.8, 14, 0.05, 0x355dff, 0.9);
+
+////////////////////////////////////////////////////////////
+// Materials
+////////////////////////////////////////////////////////////
+const matWall = new THREE.MeshStandardMaterial({ color: 0x2a2f3b, roughness: 0.96, metalness: 0.02 });
+const matFloor = new THREE.MeshStandardMaterial({ color: 0x171b22, roughness: 0.85, metalness: 0.12 });
+const matTrim = new THREE.MeshStandardMaterial({ color: 0x0f1218, roughness: 0.5, metalness: 0.55 });
+const matWood = new THREE.MeshStandardMaterial({ color: 0x5a402c, roughness: 0.78, metalness: 0.05 });
+const matFabric = new THREE.MeshStandardMaterial({ color: 0x2a3a35, roughness: 0.98, metalness: 0.0 });
+const matMetal = new THREE.MeshStandardMaterial({ color: 0x3c424a, roughness: 0.35, metalness: 0.9 });
+const matTarget = new THREE.MeshStandardMaterial({ color: 0xb92a2a, roughness: 0.55, metalness: 0.05 });
+
+////////////////////////////////////////////////////////////
+// World + Colliders
+////////////////////////////////////////////////////////////
+const world = new THREE.Group();
+scene.add(world);
+
+// Colliders are AABBs (Box3)
+const colliders = [];
+
+function addColliderFromBox(center, size, tag="") {
+  const half = size.clone().multiplyScalar(0.5);
+  const box = new THREE.Box3(
+    center.clone().sub(half),
+    center.clone().add(half)
+  );
+  colliders.push({ box, tag });
+}
+
+// Build mesh helper
+function addBoxMesh(w,h,d, x,y,z, mat, cast=false, recv=true) {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), mat);
+  mesh.position.set(x,y,z);
+  mesh.castShadow = cast;
+  mesh.receiveShadow = recv;
+  world.add(mesh);
+  return mesh;
+}
+
+// Add box as both mesh + collider
+function addBox(w,h,d, x,y,z, mat, cast=false, recv=true, tag="") {
+  addBoxMesh(w,h,d,x,y,z,mat,cast,recv);
+  addColliderFromBox(new THREE.Vector3(x,y,z), new THREE.Vector3(w,h,d), tag);
+}
+
+////////////////////////////////////////////////////////////
+// Map: Small CQB killhouse
+////////////////////////////////////////////////////////////
+
+// Floor slab (visual only)
+addBoxMesh(18, 0.2, 26, 0, -0.1, -6, matFloor, false, true);
+
+// Outer walls
+addBox(18, 3.2, 0.4, 0, 1.6,  6, matWall, false, true, "wall");
+addBox(18, 3.2, 0.4, 0, 1.6, -18, matWall, false, true, "wall");
+addBox(0.4, 3.2, 24.4,  9, 1.6, -6, matWall, false, true, "wall");
+addBox(0.4, 3.2, 24.4, -9, 1.6, -6, matWall, false, true, "wall");
+
+// Interior partitions (rooms and chokepoints)
+addBox(0.4, 3.2, 10, -3, 1.6, -3, matWall, false, true, "wall");
+addBox(0.4, 3.2, 10,  3, 1.6, -9, matWall, false, true, "wall");
+addBox(6, 3.2, 0.4, -6, 1.6, -8, matWall, false, true, "wall");
+addBox(6, 3.2, 0.4,  6, 1.6, -4, matWall, false, true, "wall");
+
+// Back lane target wall
+addBox(10, 3.2, 0.5, 0, 1.6, -20.8, matWall, false, true, "wall");
+
+// Doorframe trim (decor only)
+addBoxMesh(2.2, 0.2, 0.2, -6, 2.7, -8, matTrim, false, true);
+addBoxMesh(2.2, 0.2, 0.2,  6, 2.7, -4, matTrim, false, true);
+
+// Baseboard trim (decor)
+addBoxMesh(18, 0.15, 0.12, 0, 0.12,  5.9, matTrim, false, true);
+addBoxMesh(18, 0.15, 0.12, 0, 0.12, -17.9, matTrim, false, true);
+addBoxMesh(0.12, 0.15, 24.4,  8.9, 0.12, -6, matTrim, false, true);
+addBoxMesh(0.12, 0.15, 24.4, -8.9, 0.12, -6, matTrim, false, true);
+
+////////////////////////////////////////////////////////////
+// Furniture props (and real colliders)
+////////////////////////////////////////////////////////////
+
+function addTable(x,z, rot=0) {
+  const g = new THREE.Group();
+
+  const top = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.08, 0.9), matWood);
+  top.position.set(0, 0.78, 0);
+  top.castShadow = true; top.receiveShadow = true;
+  g.add(top);
+
+  const legGeo = new THREE.BoxGeometry(0.08, 0.75, 0.08);
+  const legs = [
+    [-0.82, 0.38, -0.38],
+    [ 0.82, 0.38, -0.38],
+    [-0.82, 0.38,  0.38],
+    [ 0.82, 0.38,  0.38],
+  ];
+  for (const [lx,ly,lz] of legs) {
+    const leg = new THREE.Mesh(legGeo, matTrim);
+    leg.position.set(lx, ly, lz);
+    leg.castShadow = true;
+    g.add(leg);
+  }
+
+  g.position.set(x, 0, z);
+  g.rotation.y = rot;
+  world.add(g);
+
+  // collider: one simple box around table
+  addColliderFromBox(new THREE.Vector3(x, 0.45, z), new THREE.Vector3(1.9, 0.95, 1.0), "table");
+}
+
+function addChair(x,z, rot=0) {
+  const g = new THREE.Group();
+
+  const seat = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.07, 0.55), matWood);
+  seat.position.set(0, 0.45, 0);
+  seat.castShadow = true; seat.receiveShadow = true;
+  g.add(seat);
+
+  const back = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.55, 0.07), matWood);
+  back.position.set(0, 0.75, -0.24);
+  back.castShadow = true;
+  g.add(back);
+
+  const legGeo = new THREE.BoxGeometry(0.06, 0.45, 0.06);
+  const legs = [
+    [-0.23, 0.22, -0.23],
+    [ 0.23, 0.22, -0.23],
+    [-0.23, 0.22,  0.23],
+    [ 0.23, 0.22,  0.23],
+  ];
+  for (const [lx,ly,lz] of legs) {
+    const leg = new THREE.Mesh(legGeo, matTrim);
+    leg.position.set(lx, ly, lz);
+    leg.castShadow = true;
+    g.add(leg);
+  }
+
+  g.position.set(x, 0, z);
+  g.rotation.y = rot;
+  world.add(g);
+
+  addColliderFromBox(new THREE.Vector3(x, 0.5, z), new THREE.Vector3(0.7, 1.2, 0.7), "chair");
+}
+
+function addShelf(x,z, rot=0) {
+  const g = new THREE.Group();
+
+  const frame = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.8, 0.35), matMetal);
+  frame.position.set(0, 0.9, 0);
+  frame.castShadow = true; frame.receiveShadow = true;
+  g.add(frame);
+
+  // shelves (emissive label strips)
+  for (let i=0;i<3;i++) {
+    const s = new THREE.Mesh(
+      new THREE.BoxGeometry(1.05, 0.05, 0.32),
+      new THREE.MeshStandardMaterial({
+        color: 0x151821,
+        emissive: 0x0b2a5f,
+        emissiveIntensity: 0.4,
+        roughness: 0.6,
+        metalness: 0.3
+      })
+    );
+    s.position.set(0, 0.4 + i*0.55, 0);
+    g.add(s);
+  }
+
+  g.position.set(x, 0, z);
+  g.rotation.y = rot;
+  world.add(g);
+
+  addColliderFromBox(new THREE.Vector3(x, 0.9, z), new THREE.Vector3(1.25, 1.9, 0.45), "shelf");
+}
+
+function addCouch(x,z, rot=0) {
+  const g = new THREE.Group();
+
+  const base = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.35, 0.85), matFabric);
+  base.position.set(0, 0.18, 0);
+  base.castShadow = true; base.receiveShadow = true;
+  g.add(base);
+
+  const back = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.75, 0.18), matFabric);
+  back.position.set(0, 0.62, -0.33);
+  back.castShadow = true;
+  g.add(back);
+
+  const armL = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.55, 0.85), matFabric);
+  armL.position.set(-0.86, 0.32, 0);
+  armL.castShadow = true;
+  g.add(armL);
+
+  const armR = armL.clone();
+  armR.position.set(0.86, 0.32, 0);
+  g.add(armR);
+
+  g.position.set(x, 0, z);
+  g.rotation.y = rot;
+  world.add(g);
+
+  addColliderFromBox(new THREE.Vector3(x, 0.55, z), new THREE.Vector3(2.05, 1.2, 0.95), "couch");
+}
+
+function addBarrel(x,z) {
+  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.38, 0.95, 18), matMetal);
+  mesh.position.set(x, 0.48, z);
+  mesh.castShadow = true; mesh.receiveShadow = true;
+  world.add(mesh);
+
+  addColliderFromBox(new THREE.Vector3(x, 0.48, z), new THREE.Vector3(0.8, 1.05, 0.8), "barrel");
+}
+
+function addCrate(x,z) {
+  addBox(1.2, 1.2, 1.2, x, 0.6, z, matTrim, true, true, "crate");
+}
+
+// Place furniture into rooms (feels like a real space)
+addTable(-5.8, -6.8, Math.PI * 0.08);
+addChair(-6.9, -6.1, Math.PI * 0.25);
+addChair(-4.9, -6.1, -Math.PI * 0.12);
+
+addShelf(6.8, -6.8, Math.PI * 0.5);
+addBarrel(6.3, -10.7);
+addBarrel(7.4, -11.2);
+
+addCouch(-6.0, -13.6, Math.PI * 0.5);
+addTable(-4.2, -13.2, Math.PI * 0.55);
+addChair(-3.6, -12.3, Math.PI * 0.8);
+
+addCrate(-2, -2);
+addCrate( 2, -6);
+addCrate( 0, -10);
+addCrate(-6, -12);
+addCrate( 6, -14);
+
+////////////////////////////////////////////////////////////
+// Targets
+////////////////////////////////////////////////////////////
+const targets = [];
+function addTarget(x, z) {
+  const t = new THREE.Mesh(new THREE.CylinderGeometry(0.35,0.35,0.08, 24), matTarget);
+  t.rotation.x = Math.PI/2;
+  t.position.set(x, 1.6, z);
+  t.castShadow = true;
+  world.add(t);
+  targets.push({ mesh: t, alive: true });
+}
+addTarget(-3, -19.8);
+addTarget( 0, -19.8);
+addTarget( 3, -19.8);
+
+////////////////////////////////////////////////////////////
+// Player physics (better collision, less tunneling)
+////////////////////////////////////////////////////////////
+const player = {
+  pos: new THREE.Vector3(0, 1.7, 6),
+  vel: new THREE.Vector3(0, 0, 0),
+  radius: 0.35,
+  height: 1.7,
+  onGround: false
+};
+
+const keys = { w:false,a:false,s:false,d:false, shift:false, space:false };
+addEventListener("keydown", (e)=>{
+  if (e.code === "KeyW") keys.w = true;
+  if (e.code === "KeyA") keys.a = true;
+  if (e.code === "KeyS") keys.s = true;
+  if (e.code === "KeyD") keys.d = true;
+  if (e.code === "ShiftLeft" || e.code === "ShiftRight") keys.shift = true;
+  if (e.code === "Space") keys.space = true;
+
+  if (e.code === "KeyR") reload();
+  if (e.code === "KeyL") toggleLaser();
+});
+addEventListener("keyup", (e)=>{
+  if (e.code === "KeyW") keys.w = false;
+  if (e.code === "KeyA") keys.a = false;
+  if (e.code === "KeyS") keys.s = false;
+  if (e.code === "KeyD") keys.d = false;
+  if (e.code === "ShiftLeft" || e.code === "ShiftRight") keys.shift = false;
+  if (e.code === "Space") keys.space = false;
+});
+
+// resolve collisions in XZ using AABB push-out
+function pushOutXZ(p) {
+  for (const c of colliders) {
+    const b = c.box;
+
+    // vertical overlap check (player as vertical cylinder)
+    const playerBottom = p.y - player.height;
+    const playerTop = p.y;
+    if (playerTop < b.min.y || playerBottom > b.max.y) continue;
+
+    const cx = THREE.MathUtils.clamp(p.x, b.min.x, b.max.x);
+    const cz = THREE.MathUtils.clamp(p.z, b.min.z, b.max.z);
+
+    const dx = p.x - cx;
+    const dz = p.z - cz;
+    const dist2 = dx*dx + dz*dz;
+
+    if (dist2 < player.radius*player.radius) {
+      const dist = Math.max(Math.sqrt(dist2), 1e-6);
+      const push = (player.radius - dist);
+      p.x += (dx/dist) * push;
+      p.z += (dz/dist) * push;
+    }
+  }
+}
+
+function moveWithCollisions(dt) {
+  // ground plane y = 0
+  player.onGround = false;
+
+  // step movement to prevent tunneling
+  const horizSpeed = Math.hypot(player.vel.x, player.vel.z);
+  const stepLen = player.radius * 0.45;
+  const steps = Math.max(1, Math.ceil((horizSpeed * dt) / stepLen));
+  const sdt = dt / steps;
+
+  for (let i=0;i<steps;i++) {
+    // integrate
+    player.pos.x += player.vel.x * sdt;
+    player.pos.z += player.vel.z * sdt;
+
+    // collide XZ
+    pushOutXZ(player.pos);
+
+    // integrate Y
+    player.pos.y += player.vel.y * sdt;
+
+    // ground clamp
+    if (player.pos.y < player.height) {
+      player.pos.y = player.height;
+      player.vel.y = 0;
+      player.onGround = true;
+    }
+
+    // also prevent head going through ceilings by crude clamp:
+    // if player is inside a collider vertically, push them down slightly
+    for (const c of colliders) {
+      const b = c.box;
+      const cx = THREE.MathUtils.clamp(player.pos.x, b.min.x, b.max.x);
+      const cz = THREE.MathUtils.clamp(player.pos.z, b.min.z, b.max.z);
+      const dx = player.pos.x - cx;
+      const dz = player.pos.z - cz;
+      const dist2 = dx*dx + dz*dz;
+      if (dist2 < player.radius*player.radius) {
+        // if our head is above collider top, ignore; else, try push down
+        if (player.pos.y > b.min.y && player.pos.y < b.max.y + player.height * 0.1) {
+          // gentle nudge up or down based on penetration
+          // (keeps you from "floating" onto shelves incorrectly)
+          if (player.pos.y - player.height < b.max.y && player.vel.y < 0) {
+            player.pos.y = b.max.y + player.height + 0.001;
+            player.vel.y = 0;
+            player.onGround = true;
+          }
+        }
+      }
+    }
+  }
+}
+
+////////////////////////////////////////////////////////////
+// Weapon (M4-ish placeholder + recoil)
+////////////////////////////////////////////////////////////
+const gun = new THREE.Group();
+camera.add(gun);
+scene.add(camera);
+
+const gunBody = new THREE.Mesh(
+  new THREE.BoxGeometry(0.22, 0.14, 0.6),
+  new THREE.MeshStandardMaterial({ color: 0x141a22, roughness: 0.32, metalness: 0.75 })
+);
+gunBody.position.set(0.18, -0.18, -0.55);
+gun.add(gunBody);
+
+const gunBarrel = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.02, 0.02, 0.45, 12),
+  new THREE.MeshStandardMaterial({ color: 0x0e1116, roughness: 0.22, metalness: 0.95 })
+);
+gunBarrel.rotation.x = Math.PI/2;
+gunBarrel.position.set(0.18, -0.16, -0.85);
+gun.add(gunBarrel);
+
+const gunStock = new THREE.Mesh(
+  new THREE.BoxGeometry(0.18, 0.12, 0.26),
+  new THREE.MeshStandardMaterial({ color: 0x0f1218, roughness: 0.55, metalness: 0.55 })
+);
+gunStock.position.set(0.18, -0.18, -0.25);
+gun.add(gunStock);
+
+const muzzle = new THREE.Object3D();
+muzzle.position.set(0.18, -0.16, -1.05);
+gun.add(muzzle);
+
+const flash = new THREE.Mesh(
+  new THREE.PlaneGeometry(0.12, 0.12),
+  new THREE.MeshStandardMaterial({ color: 0xfff2c6, emissive: 0xffc06a, emissiveIntensity: 3, transparent:true, opacity:0 })
+);
+flash.position.set(0.18, -0.16, -1.06);
+gun.add(flash);
+
+let recoil = 0;
+
+////////////////////////////////////////////////////////////
+// Laser (IR-ish faint line)
+////////////////////////////////////////////////////////////
+let laserOn = true;
+const laserMat = new THREE.LineBasicMaterial({ color: 0xff3b3b, transparent:true, opacity: 0.16 });
+const laserGeom = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0,0,-20)]);
+const laserLine = new THREE.Line(laserGeom, laserMat);
+gun.add(laserLine);
+
+function toggleLaser() {
+  laserOn = !laserOn;
+  laserLine.visible = laserOn;
+  flashMsg(laserOn ? "Laser: ON" : "Laser: OFF");
+}
+
+////////////////////////////////////////////////////////////
+// Shooting (hitscan)
+////////////////////////////////////////////////////////////
+const raycaster = new THREE.Raycaster();
+
+let ammoMax = 30;
+let ammo = ammoMax;
+let reserve = 120;
+let canShoot = true;
+
+function reload() {
+  if (ammo === ammoMax) return;
+  if (reserve <= 0) return;
+  const need = ammoMax - ammo;
+  const take = Math.min(need, reserve);
+  reserve -= take;
+  ammo += take;
+  flashMsg("Reload");
+}
+
+function shoot() {
+  if (!canShoot || ammo <= 0) return;
+
+  ammo--;
+  canShoot = false;
+  setTimeout(()=> canShoot = true, 85); // slightly faster
+
+  recoil = Math.min(recoil + 0.085, 0.30);
+  flash.material.opacity = 1;
+  setTimeout(()=> flash.material.opacity = 0, 35);
+
+  raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
+
+  const shootables = [
+    ...targets.filter(t=>t.alive).map(t=>t.mesh),
+    ...world.children
+  ];
+
+  const hits = raycaster.intersectObjects(shootables, true);
+
+  if (hits.length) {
+    const hitObj = hits[0].object;
+
+    const t = targets.find(tt => tt.mesh === hitObj);
+    if (t) {
+      t.alive = false;
+      t.mesh.material = new THREE.MeshStandardMaterial({ color: 0x3dd16b, roughness: 0.55, metalness: 0.05 });
+      flashMsg("Hit!");
+    }
+
+    // impact puff
+    const p = hits[0].point;
+    const n = hits[0].face?.normal?.clone() ?? new THREE.Vector3(0,1,0);
+    n.transformDirection(hitObj.matrixWorld);
+
+    const puff = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.14, 0.14),
+      new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xaaaaaa, emissiveIntensity: 0.15, transparent:true, opacity: 0.7 })
+    );
+    puff.position.copy(p).add(n.multiplyScalar(0.02));
+    puff.lookAt(p.clone().add(n));
+    world.add(puff);
+    setTimeout(()=> world.remove(puff), 420);
+  }
+}
+
+addEventListener("mousedown", (e)=>{
+  if (e.button === 0 && controls.isLocked) shoot();
+});
+
+////////////////////////////////////////////////////////////
+// Laser update: stop on first hit
+////////////////////////////////////////////////////////////
+function updateLaser() {
+  if (!laserOn) return;
+
+  const start = new THREE.Vector3();
+  muzzle.getWorldPosition(start);
+
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+
+  raycaster.set(start, dir);
+  raycaster.far = 45;
+
+  const shootables = [
+    ...targets.filter(t=>t.alive).map(t=>t.mesh),
+    ...world.children
+  ];
+
+  const hits = raycaster.intersectObjects(shootables, true);
+
+  const end = start.clone().add(dir.clone().multiplyScalar(45));
+  if (hits.length) end.copy(hits[0].point);
+
+  const gunInv = new THREE.Matrix4().copy(gun.matrixWorld).invert();
+  const sL = start.clone().applyMatrix4(gunInv);
+  const eL = end.clone().applyMatrix4(gunInv);
+
+  const arr = laserLine.geometry.attributes.position.array;
+  arr[0]=sL.x; arr[1]=sL.y; arr[2]=sL.z;
+  arr[3]=eL.x; arr[4]=eL.y; arr[5]=eL.z;
+  laserLine.geometry.attributes.position.needsUpdate = true;
+}
+
+////////////////////////////////////////////////////////////
+// Loop
+////////////////////////////////////////////////////////////
+let last = performance.now();
+
+function tick(now) {
+  requestAnimationFrame(tick);
+  const dt = Math.min((now - last) / 1000, 0.033);
+  last = now;
+
+  // movement
+  const baseSpeed = 3.8;
+  const sprint = 6.2;
+  const speed = (keys.shift ? sprint : baseSpeed);
+
+  const wish = new THREE.Vector3(
+    (keys.d ? 1 : 0) - (keys.a ? 1 : 0),
+    0,
+    (keys.s ? 1 : 0) - (keys.w ? 1 : 0)
+  );
+
+  if (controls.isLocked) {
+    if (wish.lengthSq() > 0) wish.normalize().multiplyScalar(speed);
+
+    // camera yaw movement
+    const yaw = new THREE.Euler(0, camera.rotation.y, 0, "YXZ");
+    wish.applyEuler(yaw);
+
+    player.vel.x = wish.x;
+    player.vel.z = wish.z;
+
+    // gravity
+    player.vel.y += -18 * dt;
+
+    // jump
+    if (keys.space && player.onGround) {
+      player.vel.y = 6.8;
+      player.onGround = false;
+    }
+
+    moveWithCollisions(dt);
+
+    controls.getObject().position.copy(player.pos);
+  }
+
+  // recoil + sway
+  recoil *= 0.86;
+  gun.position.set(0,0,0);
+  gun.rotation.set(0,0,0);
+  gun.position.y = -0.02 + Math.sin(now*0.004) * 0.003;
+  gun.position.x =  0.01 + Math.sin(now*0.003) * 0.002;
+  gun.position.z =  0.02 + recoil * 0.12;
+  gun.rotation.x = -recoil;
+
+  updateLaser();
+
+  // HUD
+  hudEl.textContent = `Ammo: ${ammo}/${ammoMax}  Reserve: ${reserve}  Targets: ${targets.filter(t=>t.alive).length}/${targets.length}`;
+
+  renderer.render(scene, camera);
+}
+
+tick(performance.now());
+
+addEventListener("resize", ()=>{
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+flashMsg("Click to play");
+</script>
+</body>
+</html>
